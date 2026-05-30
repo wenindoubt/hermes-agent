@@ -175,3 +175,31 @@ apps/desktop/demo/
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
 native/fts5_cjk/*.so
+
+# WenInDoubt local/generated business artifacts — source code stays in Google Drive.
+/exports/
+/artifacts/
+/deliverables/
+/client-artifacts/
+/generated-artifacts/
+/slides/
+/decks/
+/reports/
+/*.pdf
+/*.ppt
+/*.pptx
+/*.doc
+/*.docx
+/*.xls
+/*.xlsx
+/*.csv
+/*.zip
+/*.tar
+/*.tar.gz
+/*.tgz
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.gif
+/*.svg
