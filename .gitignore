@@ -129,3 +129,33 @@ scripts/out/
 # stores the published notes. They are not a build artifact and must never be
 # committed to the repo root. See the hermes-release skill.
 RELEASE_v*.md
+
+# WenInDoubt local/generated business artifacts — source code stays in Git;
+# client deliverables and generated exports belong in Google Drive.
+/infographic/
+/exports/
+/artifacts/
+/deliverables/
+/client-artifacts/
+/generated-artifacts/
+/slides/
+/decks/
+/reports/
+/*.pdf
+/*.ppt
+/*.pptx
+/*.doc
+/*.docx
+/*.xls
+/*.xlsx
+/*.csv
+/*.zip
+/*.tar
+/*.tar.gz
+/*.tgz
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.gif
+/*.svg
