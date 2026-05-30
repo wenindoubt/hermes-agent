@@ -143,3 +143,32 @@ apps/desktop/demo/
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
 infographic/
+
+# WenInDoubt local/generated business artifacts — source code stays in Git;
+# client deliverables and generated exports belong in Google Drive.
+/exports/
+/artifacts/
+/deliverables/
+/client-artifacts/
+/generated-artifacts/
+/slides/
+/decks/
+/reports/
+/*.pdf
+/*.ppt
+/*.pptx
+/*.doc
+/*.docx
+/*.xls
+/*.xlsx
+/*.csv
+/*.zip
+/*.tar
+/*.tar.gz
+/*.tgz
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
+/*.gif
+/*.svg
