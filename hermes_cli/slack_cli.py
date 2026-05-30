@@ -86,6 +86,8 @@ def _build_full_manifest(
         "im:write",
         "mpim:history",
         "mpim:read",
+        "reactions:read",
+        "reactions:write",
         "users:read",
     ]
 
@@ -95,6 +97,7 @@ def _build_full_manifest(
         "message.groups",
         "message.im",
         "message.mpim",
+        "reaction_added",
     ]
 
     if messaging_experience == "assistant":
