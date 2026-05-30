@@ -259,6 +259,70 @@ class TestAppMentionHandler:
             ), f"Slack slash regex does not match {expected}"
 
 
+class TestSlackReactionFeedback:
+    @pytest.mark.asyncio
+    async def test_known_reaction_generates_feedback_event(self, adapter):
+        adapter._team_bot_user_ids["T123"] = "U_BOT"
+        adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [{
+                "ts": "111.222",
+                "user": "U_BOT",
+                "text": "Useful answer",
+                "thread_ts": "111.000",
+            }]
+        })
+        adapter._fetch_thread_context = AsyncMock(return_value="[Thread context]\nUser: original ask")
+        adapter._resolve_user_name = AsyncMock(return_value="Jeffrey Wen")
+
+        await adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "long-cat-thumbs-up",
+            "item_user": "U_BOT",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "team": "T123",
+            "event_ts": "333.444",
+        })
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.chat_id == "C123"
+        assert event.source.chat_type == "group"
+        assert event.source.user_id == "U123"
+        assert event.source.user_name == "Jeffrey Wen"
+        assert event.source.thread_id == "111.000"
+        assert event.reply_to_message_id == "111.222"
+        assert "[Slack reaction feedback workflow]" in event.text
+        assert "Reaction: :long-cat-thumbs-up: (accepted/satisfied)" in event.text
+        assert "Reacted Hermes response:\nUseful answer" in event.text
+        assert "Prior thread context:\n[Thread context]" in event.text
+
+    @pytest.mark.asyncio
+    async def test_unknown_reaction_is_ignored(self, adapter):
+        await adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "eyes",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "event_ts": "333.444",
+        })
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reaction_on_human_message_is_ignored(self, adapter):
+        adapter._team_bot_user_ids["T123"] = "U_BOT"
+        await adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "brain",
+            "item_user": "U_HUMAN",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "team": "T123",
+            "event_ts": "333.444",
+        })
+        adapter.handle_message.assert_not_awaited()
+
+
 class TestSlackConnectCleanup:
     """Regression coverage for failed connect() cleanup."""
 

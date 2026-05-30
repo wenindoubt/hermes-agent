@@ -112,3 +112,12 @@ class TestSlackFullManifest:
         bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
         for event in ("message.im", "message.channels", "message.groups", "app_mention"):
             assert event in bot_events
+
+    def test_reaction_feedback_permissions_are_included(self):
+        manifest = _build_full_manifest("Hermes", "Your Hermes agent on Slack")
+
+        bot_scopes = manifest["oauth_config"]["scopes"]["bot"]
+        bot_events = manifest["settings"]["event_subscriptions"]["bot_events"]
+        assert "reactions:read" in bot_scopes
+        assert "reactions:write" in bot_scopes
+        assert "reaction_added" in bot_events
