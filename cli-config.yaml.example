@@ -729,6 +729,41 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#
+# Slack reaction feedback (opt-in). A user reaction on a Hermes message becomes a
+# feedback turn whose text is the configured instruction. Keys are bare Slack
+# emoji shortcodes (no colons); skin-tone variants match their base emoji.
+# `label` is optional (shown in the synthesized text; falls back to the emoji name).
+#
+# Requires the `reactions:read` OAuth scope and the `reaction_added` event
+# subscription. `hermes slack manifest` includes both; existing apps must
+# regenerate the manifest, re-apply it, and reinstall for them to take effect.
+#
+# platforms:
+#   slack:
+#     extra:
+#       reaction_feedback:
+#         white_check_mark:
+#           label: "accepted/satisfied"
+#           instruction: >
+#             Record this as positive feedback that the reacted Hermes response was
+#             accepted/satisfactory. Do not save noisy one-off praise. If the response
+#             demonstrates a durable user preference, project convention, reusable
+#             workflow, or skill-worthy lesson, preserve that learning using the
+#             appropriate memory or skill tool; otherwise keep the acknowledgement minimal.
+#         x:
+#           label: "negative/refine"
+#           instruction: >
+#             Treat this as negative feedback that the reacted Hermes response needs
+#             refinement. Inspect the reacted response and prior thread context, identify
+#             what likely missed, and provide a better answer. If the feedback reveals a
+#             durable preference or reusable lesson, preserve it using memory or a skill.
+#         repeat:
+#           label: "redo"
+#           instruction: >
+#             Redo the reacted Hermes response. Use the reacted message and prior thread
+#             context to produce a cleaner or more useful answer, and avoid repeating the
+#             same issue.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

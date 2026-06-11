@@ -91,6 +91,7 @@ These are the most commonly missed scopes.
 | Scope | Purpose |
 |-------|---------|
 | `groups:read` | List and get info about private channels |
+| `reactions:read` | Required only if you enable [reaction feedback](#reaction-feedback) (opt-in) |
 
 ---
 
@@ -127,6 +128,7 @@ This step is critical — it controls what messages the bot can see.
 | `message.channels` | **Yes** | Bot receives messages in **public** channels it's added to |
 | `message.groups` | **Recommended** | Bot receives messages in **private** channels it's invited to |
 | `app_mention` | **Yes** | Prevents Bolt SDK errors when bot is @mentioned |
+| `reaction_added` | Optional | Required only if you enable [reaction feedback](#reaction-feedback) (opt-in) |
 
 4. Click **Save Changes** at the bottom of the page
 
@@ -469,6 +471,45 @@ platforms:
       reply_in_thread: true
       reply_broadcast: false
 ```
+
+### Reaction feedback
+
+Opt-in. Map a Slack emoji reaction on a Hermes message to an instruction that is
+replayed back to the agent as a feedback turn — e.g. ✅ to confirm an answer, ❌ to
+ask for a refinement, 🔁 to redo it.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      reaction_feedback:
+        white_check_mark:
+          label: "accepted/satisfied"
+          instruction: >
+            Record this as positive feedback that the reacted Hermes response was
+            accepted/satisfactory.
+        x:
+          label: "negative/refine"
+          instruction: >
+            Treat this as negative feedback. Inspect the reacted response and prior
+            thread context, identify what missed, and provide a better answer.
+        repeat:
+          label: "redo"
+          instruction: >
+            Redo the reacted Hermes response, using prior thread context for a
+            cleaner result.
+```
+
+- Keys are bare Slack emoji shortcodes (no colons); skin-tone variants match their base emoji.
+- Each value is either a bare instruction string or a `{instruction, label}` mapping.
+  `label` is optional (it falls back to the emoji name); both the label and the
+  instruction are included in the text sent to the agent.
+
+:::caution Requires extra scope + event
+Reaction feedback needs the `reactions:read` scope and the `reaction_added` event
+subscription. These are auto-included in [Hermes-generated manifests](#option-a-from-a-hermes-generated-manifest-recommended);
+if you configured your app manually, add both and **reinstall** the app.
+:::
 
 ---
 

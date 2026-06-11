@@ -6187,21 +6187,7 @@ def set_config_value(key: str, value: str):
         return
     
     # Otherwise it goes to config.yaml
-    # Read the raw user config (not merged with defaults) to avoid
-    # dumping all default values back to the file
     config_path = get_config_path()
-    user_config = {}
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = yaml.safe_load(f) or {}
-        except Exception:
-            user_config = {}
-    
-    # Handle nested keys (e.g., "tts.provider") including numeric list
-    # indices (e.g., "custom_providers.0.api_key").  Delegates to
-    # _set_nested which preserves list-typed nodes; before #17876 the
-    # inline navigation here silently overwrote lists with dicts.
 
     # Convert value to appropriate type
     if value.lower() in {'true', 'yes', 'on'}:
@@ -6213,12 +6199,50 @@ def set_config_value(key: str, value: str):
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
 
-    _set_nested(user_config, key, value)
-    
-    # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
-    from utils import atomic_yaml_write
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+
+    # Prefer a comment-preserving round-trip write: users hand-edit config.yaml
+    # (e.g. Slack reaction_feedback), and a plain dump would wipe their comments.
+    #
+    # The round-trip helper only walks dict keys, so fall back to the
+    # read / _set_nested / rewrite path for indexed list paths like
+    # "custom_providers.0.api_key": _set_nested preserves lists (#17876),
+    # whereas round-trip navigation would clobber the list with a dict.
+    has_list_index = any(seg.isdigit() for seg in key.split("."))
+    wrote = False
+    if not has_list_index:
+        try:
+            from utils import atomic_roundtrip_yaml_update
+            atomic_roundtrip_yaml_update(config_path, key, value)
+            wrote = True
+        except Exception:
+            # Any failure (ruamel missing, parse/OS error) must fall back to the
+            # legacy path, not abort the set. Log so it stays diagnosable.
+            logger.debug(
+                "Comment-preserving config write failed for %s; "
+                "falling back to plain YAML dump",
+                key,
+                exc_info=True,
+            )
+            wrote = False
+    if not wrote:
+        # Read the raw user config (not merged with defaults) to avoid
+        # dumping all default values back to the file.
+        user_config = {}
+        if config_path.exists():
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            except Exception as e:
+                # File exists but isn't valid YAML. Overwriting with a fresh
+                # {key: value} would wipe the user's content/comments, so refuse.
+                raise SystemExit(
+                    f"✗ Refusing to set {key}: {config_path} exists but is not "
+                    f"valid YAML ({e}). Fix or remove the file, then retry."
+                )
+        _set_nested(user_config, key, value)
+        from utils import atomic_yaml_write
+        atomic_yaml_write(config_path, user_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

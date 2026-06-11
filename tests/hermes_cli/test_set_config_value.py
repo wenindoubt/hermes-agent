@@ -247,3 +247,93 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+# ---------------------------------------------------------------------------
+# Comment preservation — config set must not clobber hand-written comments
+# ---------------------------------------------------------------------------
+
+class TestCommentPreservation:
+    """`hermes config set` on a dict path must preserve existing comments and
+    formatting (users hand-edit config.yaml, e.g. Slack reaction_feedback
+    instruction prose).  Before this fix the PyYAML dump stripped every comment.
+    """
+
+    def _write_config(self, tmp_path, body):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_set_preserves_comments_and_updates_value(self, _isolated_hermes_home):
+        self._write_config(_isolated_hermes_home, (
+            "# top-level comment\n"
+            "model: gpt-4o  # inline comment\n"
+            "platforms:\n"
+            "  slack:\n"
+            "    extra:\n"
+            "      # reaction feedback block\n"
+            "      reaction_feedback:\n"
+            "        white_check_mark:\n"
+            "          label: accepted  # keep me\n"
+            "          instruction: do the thing\n"
+        ))
+
+        set_config_value(
+            "platforms.slack.extra.reaction_feedback.white_check_mark.label",
+            "satisfied",
+        )
+
+        config = _read_config(_isolated_hermes_home)
+        # Comments survive the write
+        assert "# top-level comment" in config
+        assert "# inline comment" in config
+        assert "# reaction feedback block" in config
+        assert "# keep me" in config
+
+        import yaml
+        reloaded = yaml.safe_load(config)
+        entry = reloaded["platforms"]["slack"]["extra"]["reaction_feedback"]["white_check_mark"]
+        # Target updated, sibling field untouched
+        assert entry["label"] == "satisfied"
+        assert entry["instruction"] == "do the thing"
+
+    def test_set_new_nested_key_preserves_comments(self, _isolated_hermes_home):
+        """Adding a brand-new nested key must keep existing comments too."""
+        self._write_config(_isolated_hermes_home, (
+            "# keep this\n"
+            "model: gpt-4o\n"
+        ))
+
+        set_config_value(
+            "platforms.slack.extra.reaction_feedback.x.instruction",
+            "refine the answer",
+        )
+
+        config = _read_config(_isolated_hermes_home)
+        assert "# keep this" in config
+
+        import yaml
+        reloaded = yaml.safe_load(config)
+        assert (
+            reloaded["platforms"]["slack"]["extra"]["reaction_feedback"]["x"]["instruction"]
+            == "refine the answer"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Malformed config guard — set must not clobber an unparseable config.yaml
+# ---------------------------------------------------------------------------
+
+class TestMalformedConfigGuard:
+    """When config.yaml exists but is invalid YAML, `config set` must refuse
+    rather than overwrite it with a fresh {key: value} (which would destroy the
+    user's content and comments)."""
+
+    def test_set_refuses_to_clobber_unparseable_config(self, _isolated_hermes_home):
+        # Unterminated flow sequence — invalid for both ruamel and PyYAML.
+        body = "providers: [unclosed, list\nmodel: gpt-4o\n"
+        (_isolated_hermes_home / "config.yaml").write_text(body)
+
+        with pytest.raises(SystemExit):
+            set_config_value("model", "gpt-4o-mini")
+
+        # File left byte-for-byte untouched — no data loss.
+        assert _read_config(_isolated_hermes_home) == body

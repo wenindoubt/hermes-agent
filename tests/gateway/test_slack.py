@@ -234,6 +234,7 @@ class TestAppMentionHandler:
 
         assert "message" in registered_events
         assert "app_mention" in registered_events
+        assert "reaction_added" in registered_events
         assert "assistant_thread_started" in registered_events
         assert "assistant_thread_context_changed" in registered_events
         # Slack slash commands are registered via a single regex matcher
@@ -251,6 +252,146 @@ class TestAppMentionHandler:
             assert slash_matcher.match(
                 expected
             ), f"Slack slash regex does not match {expected}"
+
+
+_REACTION_CONFIG = {
+    "white_check_mark": {"label": "accepted/satisfied", "instruction": "Record positive feedback."},
+    "x": {"label": "negative/refine", "instruction": "Refine the response."},
+    "repeat": {"label": "redo", "instruction": "Redo it."},
+}
+
+
+@pytest.fixture()
+def reaction_adapter():
+    config = PlatformConfig(
+        enabled=True,
+        token="xoxb-fake-token",
+        extra={"reaction_feedback": _REACTION_CONFIG},
+    )
+    a = SlackAdapter(config)
+    a._app = MagicMock()
+    a._app.client = AsyncMock()
+    a._bot_user_id = "U_BOT"
+    a._running = True
+    a.handle_message = AsyncMock()
+    return a
+
+
+class TestSlackReactionFeedback:
+    @pytest.mark.asyncio
+    async def test_known_reaction_generates_feedback_event(self, reaction_adapter):
+        reaction_adapter._team_bot_user_ids["T123"] = "U_BOT"
+        reaction_adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [{
+                "ts": "111.222",
+                "user": "U_BOT",
+                "text": "Useful answer",
+                "thread_ts": "111.000",
+            }]
+        })
+        reaction_adapter._fetch_thread_context = AsyncMock(return_value="[Thread context]\nUser: original ask")
+        reaction_adapter._resolve_user_name = AsyncMock(return_value="Jeffrey Wen")
+
+        await reaction_adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "white_check_mark",
+            "item_user": "U_BOT",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "team": "T123",
+            "event_ts": "333.444",
+        })
+
+        reaction_adapter.handle_message.assert_awaited_once()
+        event = reaction_adapter.handle_message.await_args.args[0]
+        assert event.source.chat_id == "C123"
+        assert event.source.chat_type == "group"
+        assert event.source.user_id == "U123"
+        assert event.source.user_name == "Jeffrey Wen"
+        assert event.source.thread_id == "111.000"
+        assert event.reply_to_message_id == "111.222"
+        assert "[Slack reaction feedback workflow]" in event.text
+        assert "Reaction: :white_check_mark: (accepted/satisfied)" in event.text
+        assert "Reacted Hermes response:\nUseful answer" in event.text
+        assert "Prior thread context:\n[Thread context]" in event.text
+
+    @pytest.mark.asyncio
+    async def test_unknown_reaction_is_ignored(self, reaction_adapter):
+        await reaction_adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "eyes",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "event_ts": "333.444",
+        })
+        reaction_adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reaction_on_human_message_is_ignored(self, reaction_adapter):
+        reaction_adapter._team_bot_user_ids["T123"] = "U_BOT"
+        await reaction_adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "x",
+            "item_user": "U_HUMAN",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "team": "T123",
+            "event_ts": "333.444",
+        })
+        reaction_adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skin_tone_variant_matches_base_emoji(self, reaction_adapter):
+        reaction_adapter._team_bot_user_ids["T123"] = "U_BOT"
+        reaction_adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [{"ts": "111.222", "user": "U_BOT", "text": "Useful answer"}]
+        })
+        reaction_adapter._fetch_thread_context = AsyncMock(return_value="")
+        reaction_adapter._resolve_user_name = AsyncMock(return_value="Jeffrey Wen")
+
+        await reaction_adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "white_check_mark::skin-tone-4",
+            "item_user": "U_BOT",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "team": "T123",
+            "event_ts": "333.444",
+        })
+
+        reaction_adapter.handle_message.assert_awaited_once()
+        event = reaction_adapter.handle_message.await_args.args[0]
+        assert "Reaction: :white_check_mark: (accepted/satisfied)" in event.text
+
+    @pytest.mark.asyncio
+    async def test_empty_config_ignores_all_reactions(self, adapter):
+        # `adapter` fixture has no reaction_feedback config -> feature off.
+        await adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "white_check_mark",
+            "item_user": "U_BOT",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "team": "T123",
+            "event_ts": "333.444",
+        })
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reaction_in_non_allowed_channel_is_ignored(self, reaction_adapter):
+        # allowed_channels whitelist must gate reactions just like messages.
+        reaction_adapter._team_bot_user_ids["T123"] = "U_BOT"
+        reaction_adapter.config.extra["allowed_channels"] = ["C_OTHER"]
+        await reaction_adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "white_check_mark",
+            "item_user": "U_BOT",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "team": "T123",
+            "event_ts": "333.444",
+        })
+        reaction_adapter.handle_message.assert_not_awaited()
 
 
 class TestSlackConnectCleanup:

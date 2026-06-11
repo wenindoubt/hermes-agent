@@ -38,6 +38,10 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.reaction_feedback import (
+    parse_reaction_feedback,
+    build_reaction_feedback_text,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -335,6 +339,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}  # channel_id → team_id
+        # Emoji -> feedback instruction map (opt-in; empty when unconfigured).
+        self._reaction_feedback = parse_reaction_feedback(
+            self.config.extra.get("reaction_feedback")
+        )
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events.
         self._dedup = MessageDeduplicator()
@@ -874,6 +882,10 @@ class SlackAdapter(BasePlatformAdapter):
             @self._app.event("app_mention")
             async def handle_app_mention(event, say):
                 await self._handle_slack_message(event)
+
+            @self._app.event("reaction_added")
+            async def handle_reaction_added(event, say):
+                await self._handle_reaction_added(event)
 
             # File lifecycle events can arrive around snippet uploads even when
             # the actual user message is what we care about. Ack them so Slack
@@ -2107,6 +2119,142 @@ class SlackAdapter(BasePlatformAdapter):
         metadata = self._extract_assistant_thread_metadata(event)
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
+
+    async def _fetch_message_for_reaction(
+        self,
+        channel_id: str,
+        message_ts: str,
+        team_id: str = "",
+    ) -> dict:
+        """Fetch the Slack message that received a reaction."""
+        if not channel_id or not message_ts:
+            return {}
+        client = self._get_client(channel_id)
+
+        # conversations.history covers top-level messages but can miss thread
+        # replies in some workspaces; fall back to conversations.replies.
+        try:
+            resp = await client.conversations_history(
+                channel=channel_id,
+                latest=message_ts,
+                inclusive=True,
+                limit=1,
+            )
+            for msg in resp.get("messages", []) or []:
+                if str(msg.get("ts", "")) == str(message_ts):
+                    return msg
+        except Exception as e:
+            logger.debug("[Slack] conversations.history failed for reaction target %s: %s", message_ts, e)
+
+        try:
+            resp = await client.conversations_replies(
+                channel=channel_id,
+                ts=message_ts,
+                inclusive=True,
+                limit=1,
+            )
+            for msg in resp.get("messages", []) or []:
+                if str(msg.get("ts", "")) == str(message_ts):
+                    return msg
+        except Exception as e:
+            logger.debug("[Slack] conversations.replies failed for reaction target %s: %s", message_ts, e)
+
+        return {}
+
+    async def _handle_reaction_added(self, event: dict) -> None:
+        """Convert selected user reactions on Hermes messages into feedback turns."""
+        event_ts = event.get("event_ts", "")
+        if event_ts and self._dedup.is_duplicate(f"reaction:{event_ts}"):
+            return
+
+        emoji = event.get("reaction", "")
+        # Strip Slack's "<name>::skin-tone-N" so toned reactions still match.
+        emoji = emoji.split("::", 1)[0]
+        entry = self._reaction_feedback.get(emoji)
+        if entry is None:
+            return
+
+        user_id = event.get("user", "")
+        if user_id and user_id in set(self._team_bot_user_ids.values()) | {self._bot_user_id}:
+            return
+
+        item = event.get("item") or {}
+        if item.get("type") != "message":
+            return
+        channel_id = item.get("channel", "")
+        message_ts = item.get("ts", "")
+        if not channel_id or not message_ts:
+            return
+
+        team_id = event.get("team") or event.get("team_id") or ""
+        if team_id and channel_id:
+            self._channel_team[channel_id] = team_id
+
+        # Only react to Hermes/bot messages — never treat reactions on human
+        # messages as prompts.
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        item_user = event.get("item_user", "")
+        if bot_uid and item_user and item_user != bot_uid:
+            return
+
+        # Apply the same channel whitelist as _handle_slack_message (DMs, which
+        # start with "D", are never filtered).
+        if not channel_id.startswith("D"):
+            allowed_channels = self._slack_allowed_channels()
+            if allowed_channels and channel_id not in allowed_channels:
+                logger.debug(
+                    "[Slack] Ignoring reaction in non-allowed channel: %s", channel_id
+                )
+                return
+
+        reacted_message = await self._fetch_message_for_reaction(channel_id, message_ts, team_id=team_id)
+        reacted_text = reacted_message.get("text", "") or ""
+        reacted_user = reacted_message.get("user", "")
+        reacted_bot_id = reacted_message.get("bot_id", "")
+        if bot_uid and reacted_user and reacted_user != bot_uid and not reacted_bot_id:
+            return
+
+        # Keep the synthetic turn in the reacted message's thread; top-level
+        # messages key on their own ts, matching normal message handling.
+        thread_ts = reacted_message.get("thread_ts") or message_ts
+        prior_thread_context = ""
+        if thread_ts:
+            try:
+                prior_thread_context = await self._fetch_thread_context(
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    current_ts=message_ts,
+                    team_id=team_id,
+                ) or ""
+            except Exception:
+                logger.debug("[Slack] Failed to fetch reaction thread context", exc_info=True)
+
+        user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
+        chat_type = "dm" if channel_id.startswith("D") else "group"
+        source = self.build_source(
+            chat_id=channel_id,
+            chat_name=channel_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=thread_ts,
+        )
+        msg_event = MessageEvent(
+            text=build_reaction_feedback_text(
+                entry,
+                emoji=emoji,
+                message_ts=message_ts,
+                reacted_text=reacted_text,
+                prior_thread_context=prior_thread_context,
+            ),
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=event,
+            message_id=event_ts or message_ts,
+            reply_to_message_id=message_ts,
+            reply_to_text=reacted_text or None,
+        )
+        await self.handle_message(msg_event)
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""

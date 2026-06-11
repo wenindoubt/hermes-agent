@@ -78,9 +78,11 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "im:history",
                     "im:read",
                     "im:write",
+                    "reactions:read",
+                    "reactions:write",
                     "users:read",
-                ],
-            },
+                ]
+            }
         },
         "settings": {
             "event_subscriptions": {
@@ -91,6 +93,7 @@ def _build_full_manifest(bot_name: str, bot_description: str) -> dict:
                     "message.channels",
                     "message.groups",
                     "message.im",
+                    "reaction_added",
                 ],
             },
             "interactivity": {
