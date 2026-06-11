@@ -254,11 +254,33 @@ class TestAppMentionHandler:
             ), f"Slack slash regex does not match {expected}"
 
 
+_REACTION_CONFIG = {
+    "long-cat-thumbs-up": {"label": "accepted/satisfied", "instruction": "Record positive feedback."},
+    "brain": {"instruction": "Save durable learning."},
+}
+
+
+@pytest.fixture()
+def reaction_adapter():
+    config = PlatformConfig(
+        enabled=True,
+        token="xoxb-fake-token",
+        extra={"reaction_feedback": _REACTION_CONFIG},
+    )
+    a = SlackAdapter(config)
+    a._app = MagicMock()
+    a._app.client = AsyncMock()
+    a._bot_user_id = "U_BOT"
+    a._running = True
+    a.handle_message = AsyncMock()
+    return a
+
+
 class TestSlackReactionFeedback:
     @pytest.mark.asyncio
-    async def test_known_reaction_generates_feedback_event(self, adapter):
-        adapter._team_bot_user_ids["T123"] = "U_BOT"
-        adapter._app.client.conversations_history = AsyncMock(return_value={
+    async def test_known_reaction_generates_feedback_event(self, reaction_adapter):
+        reaction_adapter._team_bot_user_ids["T123"] = "U_BOT"
+        reaction_adapter._app.client.conversations_history = AsyncMock(return_value={
             "messages": [{
                 "ts": "111.222",
                 "user": "U_BOT",
@@ -266,10 +288,10 @@ class TestSlackReactionFeedback:
                 "thread_ts": "111.000",
             }]
         })
-        adapter._fetch_thread_context = AsyncMock(return_value="[Thread context]\nUser: original ask")
-        adapter._resolve_user_name = AsyncMock(return_value="Jeffrey Wen")
+        reaction_adapter._fetch_thread_context = AsyncMock(return_value="[Thread context]\nUser: original ask")
+        reaction_adapter._resolve_user_name = AsyncMock(return_value="Jeffrey Wen")
 
-        await adapter._handle_reaction_added({
+        await reaction_adapter._handle_reaction_added({
             "type": "reaction_added",
             "user": "U123",
             "reaction": "long-cat-thumbs-up",
@@ -279,8 +301,8 @@ class TestSlackReactionFeedback:
             "event_ts": "333.444",
         })
 
-        adapter.handle_message.assert_awaited_once()
-        event = adapter.handle_message.await_args.args[0]
+        reaction_adapter.handle_message.assert_awaited_once()
+        event = reaction_adapter.handle_message.await_args.args[0]
         assert event.source.chat_id == "C123"
         assert event.source.chat_type == "group"
         assert event.source.user_id == "U123"
@@ -293,24 +315,61 @@ class TestSlackReactionFeedback:
         assert "Prior thread context:\n[Thread context]" in event.text
 
     @pytest.mark.asyncio
-    async def test_unknown_reaction_is_ignored(self, adapter):
-        await adapter._handle_reaction_added({
+    async def test_unknown_reaction_is_ignored(self, reaction_adapter):
+        await reaction_adapter._handle_reaction_added({
             "type": "reaction_added",
             "user": "U123",
             "reaction": "eyes",
             "item": {"type": "message", "channel": "C123", "ts": "111.222"},
             "event_ts": "333.444",
         })
-        adapter.handle_message.assert_not_awaited()
+        reaction_adapter.handle_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_reaction_on_human_message_is_ignored(self, adapter):
-        adapter._team_bot_user_ids["T123"] = "U_BOT"
-        await adapter._handle_reaction_added({
+    async def test_reaction_on_human_message_is_ignored(self, reaction_adapter):
+        reaction_adapter._team_bot_user_ids["T123"] = "U_BOT"
+        await reaction_adapter._handle_reaction_added({
             "type": "reaction_added",
             "user": "U123",
             "reaction": "brain",
             "item_user": "U_HUMAN",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "team": "T123",
+            "event_ts": "333.444",
+        })
+        reaction_adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_skin_tone_variant_matches_base_emoji(self, reaction_adapter):
+        reaction_adapter._team_bot_user_ids["T123"] = "U_BOT"
+        reaction_adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [{"ts": "111.222", "user": "U_BOT", "text": "Useful answer"}]
+        })
+        reaction_adapter._fetch_thread_context = AsyncMock(return_value="")
+        reaction_adapter._resolve_user_name = AsyncMock(return_value="Jeffrey Wen")
+
+        await reaction_adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "long-cat-thumbs-up::skin-tone-4",
+            "item_user": "U_BOT",
+            "item": {"type": "message", "channel": "C123", "ts": "111.222"},
+            "team": "T123",
+            "event_ts": "333.444",
+        })
+
+        reaction_adapter.handle_message.assert_awaited_once()
+        event = reaction_adapter.handle_message.await_args.args[0]
+        assert "Reaction: :long-cat-thumbs-up: (accepted/satisfied)" in event.text
+
+    @pytest.mark.asyncio
+    async def test_empty_config_ignores_all_reactions(self, adapter):
+        # `adapter` fixture has no reaction_feedback config -> feature off.
+        await adapter._handle_reaction_added({
+            "type": "reaction_added",
+            "user": "U123",
+            "reaction": "long-cat-thumbs-up",
+            "item_user": "U_BOT",
             "item": {"type": "message", "channel": "C123", "ts": "111.222"},
             "team": "T123",
             "event_ts": "333.444",

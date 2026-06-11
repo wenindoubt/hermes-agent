@@ -38,6 +38,10 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.reaction_feedback import (
+    parse_reaction_feedback,
+    build_reaction_feedback_text,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -335,6 +339,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, Any] = {}  # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}  # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}  # channel_id → team_id
+        # Emoji -> feedback instruction map (opt-in; empty when unconfigured).
+        self._reaction_feedback = parse_reaction_feedback(
+            self.config.extra.get("reaction_feedback")
+        )
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events.
         self._dedup = MessageDeduplicator()
@@ -2112,39 +2120,6 @@ class SlackAdapter(BasePlatformAdapter):
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
 
-    _REACTION_FEEDBACK_LABELS = {
-        "long-cat-thumbs-up": "accepted/satisfied",
-        "long-cat-worried-sweat": "negative / refine",
-        "brain": "save durable learning",
-        "repeat": "redo",
-    }
-
-    _REACTION_FEEDBACK_INSTRUCTIONS = {
-        "long-cat-thumbs-up": (
-            "Record this as positive feedback that the reacted Hermes response was "
-            "accepted/satisfactory. Do not save noisy one-off praise. If the response "
-            "demonstrates a durable user preference, project convention, reusable workflow, "
-            "or skill-worthy lesson, preserve that learning using the appropriate memory or "
-            "skill tool; otherwise keep the acknowledgement minimal."
-        ),
-        "long-cat-worried-sweat": (
-            "Treat this as negative feedback that the reacted Hermes response needs refinement. "
-            "Inspect the reacted response and prior thread context, identify what likely missed, "
-            "and provide a better answer. If the feedback reveals a durable preference or reusable "
-            "lesson, preserve it using memory or a skill."
-        ),
-        "brain": (
-            "Evaluate whether the reacted Hermes response or thread context contains durable "
-            "learning worth preserving. Save stable user preferences, project conventions, or "
-            "reusable procedures using the appropriate memory or skill tool; avoid saving "
-            "temporary task progress."
-        ),
-        "repeat": (
-            "Redo the reacted Hermes response. Use the reacted message and prior thread context "
-            "to produce a cleaner or more useful answer, and avoid repeating the same issue."
-        ),
-    }
-
     async def _fetch_message_for_reaction(
         self,
         channel_id: str,
@@ -2187,31 +2162,6 @@ class SlackAdapter(BasePlatformAdapter):
 
         return {}
 
-    def _reaction_feedback_text(
-        self,
-        *,
-        emoji: str,
-        message_ts: str,
-        reacted_text: str,
-        prior_thread_context: str = "",
-    ) -> str:
-        label = self._REACTION_FEEDBACK_LABELS[emoji]
-        instruction = self._REACTION_FEEDBACK_INSTRUCTIONS[emoji]
-        parts = [
-            "[Slack reaction feedback workflow]",
-            f"Reaction: :{emoji}: ({label})",
-            f"Reacted message timestamp: {message_ts}",
-            "",
-            "Workflow instruction:",
-            instruction,
-            "",
-            "Reacted Hermes response:",
-            reacted_text or "[Unable to fetch reacted message text]",
-        ]
-        if prior_thread_context:
-            parts.extend(["", "Prior thread context:", prior_thread_context])
-        return "\n".join(parts)
-
     async def _handle_reaction_added(self, event: dict) -> None:
         """Convert selected user reactions on Hermes messages into feedback turns."""
         event_ts = event.get("event_ts", "")
@@ -2219,7 +2169,11 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         emoji = event.get("reaction", "")
-        if emoji not in self._REACTION_FEEDBACK_LABELS:
+        # Slack appends skin-tone modifiers as "<name>::skin-tone-N"; match the
+        # base emoji so toned reactions on a configured emoji still trigger.
+        emoji = emoji.split("::", 1)[0]
+        entry = self._reaction_feedback.get(emoji)
+        if entry is None:
             return
 
         user_id = event.get("user", "")
@@ -2279,7 +2233,8 @@ class SlackAdapter(BasePlatformAdapter):
             thread_id=thread_ts,
         )
         msg_event = MessageEvent(
-            text=self._reaction_feedback_text(
+            text=build_reaction_feedback_text(
+                entry,
                 emoji=emoji,
                 message_ts=message_ts,
                 reacted_text=reacted_text,
