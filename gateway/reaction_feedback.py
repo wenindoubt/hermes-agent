@@ -6,9 +6,9 @@ to an instruction string injected back to the agent as a feedback turn.
 The map is keyed by the *platform-native* reaction identifier (for Slack, the
 bare ``reaction_added`` shortcode such as ``thumbsup``). When promoted to other
 platforms, each adapter normalizes its inbound reaction into this key space
-before lookup (Slack strips the ``::skin-tone-N`` suffix and surrounding colons;
-unicode platforms pass the glyph through). Keep this module free of
-platform-specific imports.
+before lookup (Slack strips the ``::skin-tone-N`` suffix at runtime; surrounding
+colons on config keys are normalized away at parse time; unicode platforms pass
+the glyph through). Keep this module free of platform-specific imports.
 """
 
 from __future__ import annotations
