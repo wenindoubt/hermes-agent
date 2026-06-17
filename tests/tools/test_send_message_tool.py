@@ -44,6 +44,18 @@ from plugins.platforms.discord.adapter import (
     _probe_is_forum_cached,
     _standalone_send,
 )
+from plugins.platforms.slack.adapter import _standalone_send as _slack_standalone_send
+
+
+async def _send_slack(token, chat_id, message, thread_ts=None):
+    """Pre-migration ``(token, chat_id, message, …)`` adapter for Slack tests."""
+    pconfig = SimpleNamespace(token=token, extra={})
+    return await _slack_standalone_send(
+        pconfig,
+        chat_id,
+        message,
+        thread_id=thread_ts,
+    )
 
 
 async def _send_discord(
@@ -959,6 +971,228 @@ class TestParseTargetRef:
         ]
         for platform, target in cases:
             assert _parse_target_ref(platform, target)[2] is False, f"{platform}:{target}"
+
+    def test_lid_jid_is_explicit(self):
+        chat_id, _, is_explicit = _parse_target_ref(
+            "whatsapp", "149606612619433@lid"
+        )
+        assert chat_id == "149606612619433@lid"
+        assert is_explicit is True
+
+    def test_broadcast_and_newsletter_jids_are_explicit(self):
+        assert _parse_target_ref("whatsapp", "status@broadcast")[2] is True
+        assert _parse_target_ref("whatsapp", "120363000000000000@newsletter")[2] is True
+
+    def test_whatsapp_e164_still_explicit_alongside_jids(self):
+        """The pre-existing '+'-prefixed E.164 path must keep working."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_jid_suffix_only_matches_whatsapp(self):
+        """WhatsApp JID suffixes must NOT be treated as explicit elsewhere."""
+        assert _parse_target_ref("telegram", "120363408391911677@g.us")[2] is False
+        assert _parse_target_ref("signal", "149606612619433@lid")[2] is False
+
+    def test_non_jid_whatsapp_target_falls_through(self):
+        """A bare friendly name is not a JID — it must fall through to
+        directory resolution (returns not-explicit so the caller can resolve)."""
+        assert _parse_target_ref("whatsapp", "general")[2] is False
+
+
+class TestParseTargetRefSlack:
+    """_parse_target_ref recognizes Slack conversation and user DM targets."""
+
+    def test_thread_target_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C0B0QV5434G:171.000001")
+        assert chat_id == "C0B0QV5434G"
+        assert thread_id == "171.000001"
+        assert is_explicit is True
+
+    def test_public_channel_id_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C0B0QV5434G")
+        assert chat_id == "C0B0QV5434G"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_private_channel_id_is_explicit(self):
+        assert _parse_target_ref("slack", "G123ABCDEF")[2] is True
+
+    def test_dm_id_is_explicit(self):
+        assert _parse_target_ref("slack", "D123ABCDEF")[2] is True
+
+    def test_user_id_is_explicit_dm_target(self):
+
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "U123ABCDEF")
+        assert chat_id == "user:U123ABCDEF"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_mention_is_explicit_dm_target(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "<@U123ABCDEF|alice>")
+        assert chat_id == "user:U123ABCDEF"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_at_username_is_explicit_dm_target(self):
+        """slack:@username targets resolve to DMs through users.list + conversations.open."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "@alice")
+        assert chat_id == "user_name:alice"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_workspace_id_is_not_explicit(self):
+
+        assert _parse_target_ref("slack", "W123ABCDEF")[2] is False
+
+    def test_whitespace_is_stripped(self):
+        chat_id, _, is_explicit = _parse_target_ref("slack", "  C0B0QV5434G  ")
+        assert chat_id == "C0B0QV5434G"
+        assert is_explicit is True
+
+    def test_lowercase_or_short_id_is_not_explicit(self):
+        assert _parse_target_ref("slack", "c0b0qv5434g")[2] is False
+        assert _parse_target_ref("slack", "C123")[2] is False
+        assert _parse_target_ref("slack", "X0B0QV5434G")[2] is False
+
+    def test_slack_id_not_explicit_for_other_platforms(self):
+        assert _parse_target_ref("discord", "C0B0QV5434G")[2] is False
+        assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
+
+
+class TestSendSlackDmTargets:
+    """_send_slack opens user targets as DMs before posting."""
+
+    @staticmethod
+    def _mock_response(data):
+        response = MagicMock()
+        response.json = AsyncMock(return_value=data)
+        response.__aenter__ = AsyncMock(return_value=response)
+        response.__aexit__ = AsyncMock(return_value=None)
+        return response
+
+    @staticmethod
+    def _mock_session(*responses):
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.post = MagicMock(side_effect=responses)
+        return session
+
+    def test_user_id_target_opens_dm_before_posting(self):
+        session = self._mock_session(
+            self._mock_response({"ok": True, "channel": {"id": "D123ABCDEF"}}),
+            self._mock_response({"ok": True, "ts": "123.456"}),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("tok", "user:U123ABCDEF", "hello"))
+
+        assert result == {
+            "success": True,
+            "platform": "slack",
+            "chat_id": "D123ABCDEF",
+            "message_id": "123.456",
+        }
+        open_payload = session.post.call_args_list[0].kwargs["json"]
+        post_payload = session.post.call_args_list[1].kwargs["json"]
+        assert open_payload == {"users": "U123ABCDEF"}
+        assert post_payload["channel"] == "D123ABCDEF"
+        assert post_payload["text"] == "hello"
+
+    def test_username_target_resolves_user_then_opens_dm(self):
+        session = self._mock_session(
+            self._mock_response({
+                "ok": True,
+                "members": [
+                    {"id": "UOTHER123", "name": "someone", "profile": {"display_name": "Other", "real_name": "Other User"}},
+                    {"id": "U123ABCDEF", "name": "alice", "profile": {"display_name": "Alice", "real_name": "Alice Example"}},
+                ],
+                "response_metadata": {},
+            }),
+            self._mock_response({"ok": True, "channel": {"id": "D123ABCDEF"}}),
+            self._mock_response({"ok": True, "ts": "123.456"}),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("tok", "user_name:alice", "hello"))
+
+        assert result["success"] is True
+        assert result["chat_id"] == "D123ABCDEF"
+        assert session.post.call_args_list[1].kwargs["json"] == {"users": "U123ABCDEF"}
+
+    def test_username_target_does_not_match_display_or_real_name(self):
+        session = self._mock_session(
+            self._mock_response({
+                "ok": True,
+                "members": [
+                    {"id": "U123ABCDEF", "name": "notalice", "profile": {"display_name": "alice", "real_name": "alice"}},
+                ],
+                "response_metadata": {},
+            }),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("tok", "user_name:alice", "hello"))
+
+        assert "error" in result
+        assert "Could not resolve Slack user '@alice'" in result["error"]
+        assert session.post.call_count == 1
+
+    def test_ambiguous_username_returns_error_without_opening_dm(self):
+        session = self._mock_session(
+            self._mock_response({
+                "ok": True,
+                "members": [
+                    {"id": "U111AAAAA", "name": "alice", "profile": {}},
+                    {"id": "U222BBBBB", "name": "alice", "profile": {}},
+                ],
+                "response_metadata": {},
+            }),
+        )
+
+        with patch("aiohttp.ClientSession", return_value=session):
+            result = asyncio.run(_send_slack("tok", "user_name:alice", "hello"))
+
+        assert "error" in result
+        assert "matched multiple Slack users" in result["error"]
+        assert session.post.call_count == 1
+
+
+class TestParseTargetRefEmail:
+    """_parse_target_ref recognizes email addresses as explicit for the email platform."""
+
+    def test_standard_email_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("email", "user@example.com")
+        assert chat_id == "user@example.com"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_email_with_dots_in_local_part(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "first.last@example.co.uk")
+        assert chat_id == "first.last@example.co.uk"
+        assert is_explicit is True
+
+    def test_email_with_plus_tag(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "user+tag@gmail.com")
+        assert chat_id == "user+tag@gmail.com"
+        assert is_explicit is True
+
+    def test_email_strips_whitespace(self):
+        chat_id, _, is_explicit = _parse_target_ref("email", "  user@example.com  ")
+        assert chat_id == "user@example.com"
+        assert is_explicit is True
+
+    def test_invalid_email_not_explicit(self):
+        assert _parse_target_ref("email", "not-an-email")[2] is False
+        assert _parse_target_ref("email", "@example.com")[2] is False
+        assert _parse_target_ref("email", "user@")[2] is False
+        assert _parse_target_ref("email", "user@.com")[2] is False
+
+    def test_email_not_explicit_for_other_platforms(self):
+        assert _parse_target_ref("telegram", "user@example.com")[2] is False
+        assert _parse_target_ref("discord", "user@example.com")[2] is False
+        assert _parse_target_ref("slack", "user@example.com")[2] is False
 
 
 class TestEmailHomeChannelErrorHint:
