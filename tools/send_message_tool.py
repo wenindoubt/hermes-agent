@@ -21,12 +21,13 @@ logger = logging.getLogger(__name__)
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 # Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
-# Must be uppercase alphanumeric, 9+ chars. User IDs (U...) and workspace IDs
-# (W...) are NOT valid chat.postMessage channel values — posting to them fails
-# because the API requires a conversation ID. To DM a user you must first call
-# conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
-# through to channel-name resolution, which only matches by name and fails.
-_SLACK_TARGET_RE = re.compile(r"^\s*([CGDU][A-Z0-9]{8,})\s*$")
+# Must be uppercase alphanumeric, 9+ chars. User IDs (U...) are parsed as
+# explicit internal user targets and converted to D... conversations via
+# conversations.open before chat.postMessage.
+_SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
+_SLACK_USER_ID_RE = re.compile(r"^\s*(U[A-Z0-9]{8,})\s*$")
+_SLACK_USER_NAME_RE = re.compile(r"^\s*@([A-Za-z0-9._-]{1,80})\s*$")
+_SLACK_MENTION_RE = re.compile(r"^\s*<@(U[A-Z0-9]{8,})(?:\|[^>]+)?>\s*$")
 # Session-derived Slack thread targets use "<conversation_id>:<thread_ts>".
 _SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,}):([^\s:]+)\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
@@ -416,7 +417,7 @@ def _handle_send(args):
                 url = "https://slack.com/api/conversations.open"
                 headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-                    async with session.post(url, headers=headers, json={"users": [user_id]}) as resp:
+                    async with session.post(url, headers=headers, json={"users": user_id}) as resp:
                         data = await resp.json()
                         if data.get("ok"):
                             return data["channel"]["id"]
@@ -499,14 +500,13 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return match.group(1), match.group(2), True
         match = _SLACK_TARGET_RE.fullmatch(target_ref)
         if match:
-            chat_id = match.group(1)
-            # Slack user IDs (U...) and workspace IDs (W...) are NOT valid
-            # explicit send targets — chat.postMessage rejects them. A DM
-            # must be opened first via conversations.open to get a D...
-            # conversation ID. Caller still gets the chat_id so the U→D
-            # resolution path in send_message() can run.
-            is_explicit = chat_id[0] not in {"U", "W"}
-            return chat_id, None, is_explicit
+            return match.group(1), None, True
+        match = _SLACK_USER_ID_RE.fullmatch(target_ref) or _SLACK_MENTION_RE.fullmatch(target_ref)
+        if match:
+            return f"user:{match.group(1)}", None, True
+        match = _SLACK_USER_NAME_RE.fullmatch(target_ref)
+        if match:
+            return f"user_name:{match.group(1)}", None, True
     if platform_name == "matrix":
         trimmed = target_ref.strip()
         split_idx = trimmed.rfind(":$")
