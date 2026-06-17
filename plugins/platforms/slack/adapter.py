@@ -5893,8 +5893,65 @@ async def _standalone_send(
     try:
         _sess_kw, _req_kw = _standalone_proxy_kwargs()
         last_error = "unknown"
+
+        async def post_api(session, api_token, method, payload):
+            return await _slack_json_post(session, api_token, method, payload, _req_kw)
+
+        async def resolve_user_name(session, name):
+            query = name.strip().lstrip("@").lower()
+            matches = []
+            cursor = None
+            for _page in range(20):
+                payload = {"limit": 200}
+                if cursor:
+                    payload["cursor"] = cursor
+                data = await post_api(session, token, "users.list", payload)
+                if not data.get("ok"):
+                    return None, f"Slack users.list error: {data.get('error', 'unknown')}"
+                for member in data.get("members", []):
+                    if member.get("deleted") or member.get("is_bot"):
+                        continue
+                    # Match only Slack's stable handle. Display/real names are
+                    # mutable and non-unique enough to risk DMing the wrong person.
+                    if str(member.get("name", "")).strip().lower() == query:
+                        matches.append(member)
+                cursor = (data.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+            if not matches:
+                return None, f"Could not resolve Slack user '@{name}'."
+            if len(matches) > 1:
+                return None, (
+                    f"Slack user '@{name}' matched multiple Slack users. "
+                    "Use a Slack user ID instead."
+                )
+            return matches[0].get("id"), None
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+            timeout=aiohttp.ClientTimeout(total=30), **_sess_kw
+        ) as session:
+            if str(chat_id).startswith("user_name:"):
+                user_id, error = await resolve_user_name(
+                    session, str(chat_id)[len("user_name:") :]
+                )
+                if error:
+                    return {"error": error}
+                chat_id = f"user:{user_id}"
+
+            if str(chat_id).startswith("user:"):
+                user_id = str(chat_id)[len("user:") :]
+                resolved_chat_id = None
+                for tok in tokens:
+                    opened = await post_api(session, tok, "conversations.open", {"users": user_id})
+                    if opened.get("ok"):
+                        resolved_chat_id = (opened.get("channel") or {}).get("id")
+                        if resolved_chat_id:
+                            token = tok
+                            break
+                    last_error = opened.get("error", "unknown")
+                if not resolved_chat_id:
+                    return {"error": f"Slack conversations.open error: {last_error}"}
+                chat_id = resolved_chat_id
+
             payload = _standalone_post_kwargs(chat_id, formatted, unfurl_kwargs, thread_id)
             for tok in tokens:
                 data = await _slack_json_post(session, tok, "chat.postMessage", payload, _req_kw)
