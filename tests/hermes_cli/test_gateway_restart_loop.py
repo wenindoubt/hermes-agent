@@ -579,6 +579,11 @@ class TestLifecycleGuardModule:
         check_gateway_lifecycle("research the gateway architecture", None)
         check_gateway_lifecycle("check server health and restart watchers", None)
 
+    def test_status_echo_does_not_raise(self):
+        """Status text is data; only an executed lifecycle command is blocked."""
+        from cron.lifecycle_guard import check_gateway_lifecycle
+        check_gateway_lifecycle('echo "Scheduled Hermes gateway restart via systemd unit"', None)
+
     def test_script_with_command_raises(self, tmp_path, monkeypatch):
         from cron.lifecycle_guard import GatewayLifecycleBlocked, check_gateway_lifecycle
         script = tmp_path / "restart.sh"

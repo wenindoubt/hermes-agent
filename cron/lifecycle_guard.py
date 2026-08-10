@@ -137,13 +137,14 @@ def _is_cloud_placeholder_path(path: Path) -> bool:
 
 # Executables whose arguments are DATA, not commands: search patterns, SQL
 # statements, log filters. None of these can execute their argument text, so
-# a lifecycle-shaped string inside their arguments (a grep pattern hunting
-# for `systemctl restart hermes-gateway` in syslog, a SQL LIKE literal over a
-# restart-events table) is diagnostics, not a lifecycle command. Deliberately
-# conservative: no `awk` (system()), no `sed` (`s///e`), no `echo`/`printf`
-# (routinely piped into a shell), no `mysql` (`\\!` and `system` escapes).
+# such a lifecycle-shaped string inside their arguments (a grep pattern hunting
+# for `systemctl restart hermes-gateway` in syslog, a status `echo`, or a SQL
+# LIKE literal over a restart-events table) is data, not a lifecycle command.
+# Pipelines into interpreters and command substitutions fail closed below, so
+# plain `echo`/`printf` status output is safe to mask. Deliberately exclude
+# `awk` (system()), `sed` (`s///e`), and `mysql` (`\\!` and `system` escapes).
 _DATA_SINK_EXECUTABLES = frozenset(
-    {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql"}
+    {"grep", "egrep", "fgrep", "rg", "ag", "ack", "journalctl", "sqlite3", "psql", "echo", "printf"}
 )
 # Argument shapes that can smuggle execution back INTO a data sink: command
 # and process substitution anywhere, sqlite3 dot-commands (`.shell ...`),
