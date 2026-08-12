@@ -7332,7 +7332,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles) plus
             # hermes-serve* units (the Desktop app's backend, #83438).
-            if supports_systemd_services():
+            if (
+                not getattr(args, "no_gateway_restart", False)
+                and supports_systemd_services()
+            ):
                 try:
                     _ensure_user_systemd_env()
                 except Exception:

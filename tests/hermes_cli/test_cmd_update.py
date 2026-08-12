@@ -89,6 +89,20 @@ def _patch_gateway_discovery():
         yield
 
 
+def test_update_parser_accepts_externally_orchestrated_restart_flag():
+    """Maintenance wrappers can defer service handoff outside gateway cgroups."""
+    import argparse
+    from hermes_cli.subcommands.update import build_update_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_update_parser(subparsers, cmd_update=lambda _args: None)
+
+    args = parser.parse_args(["update", "--no-gateway-restart"])
+
+    assert args.no_gateway_restart is True
+
+
 class TestCmdUpdateNpmLockfileCache:
     @staticmethod
     def _cache_file(hermes_root, project_root):

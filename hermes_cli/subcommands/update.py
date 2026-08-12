@@ -100,6 +100,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         ),
     )
     update_parser.add_argument(
+        "--no-gateway-restart",
+        action="store_true",
+        default=False,
+        help="Apply the update without restarting gateway services. Intended for externally orchestrated restarts.",
+    )
+    update_parser.add_argument(
         "--force",
         action="store_true",
         default=False,
